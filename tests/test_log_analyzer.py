@@ -39,6 +39,6 @@ def test_statistics_collection():
 
     analyzer.process(entry)
 
-    assert analyzer.ip_hits["127.0.0.1"] == 1
-    assert analyzer.status_codes["2xx"] == 1
-    assert analyzer.uri_hits["/a"] == 1
+    assert analyzer.ip_counts["127.0.0.1"] == 1
+    assert analyzer.status_counts["2xx"] == 1
+    assert analyzer.uri_counts["/a"] == 1

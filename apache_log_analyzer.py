@@ -1,9 +1,3 @@
-# DoS detection uses per-second bucketing:
-# timestamps are normalized to second precision to approximate request bursts.
-# This allows detection of sudden traffic spikes per IP without storing raw events.
-# Signature matching uses case-insensitive substring search over normalized request
-# URI + query string. This is a simple baseline detector for known attack vectors.
-
 import re
 import sys
 import argparse
@@ -23,48 +17,55 @@ class LogEntry:
     status_code: int
 
     def full_uri(self) -> str:
-        if self.query_string:
-            return f"{self.uri}?{self.query_string}"
+        """Return URI with query string if it exists."""
+        if self.query_string != "":
+            return self.uri + "?" + self.query_string
         return self.uri
 
 class SignatureDB:
     """
-    Stores and matches security signatures against HTTP request data.
-
-    Matching is case-insensitive and performed via substring search
-    over full normalized URI + query string.
+    Loads known attack signatures and checks if they appear in requests.
     """
+
     def __init__(self, path: str):
         self.signatures = []
-        self._load(path)
+        self.load_signatures(path)
 
-    def _load(self, path: str):
+    def load_signatures(self, path: str):
+        """Read signature file into memory."""
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                self.signatures = [
-                    line.strip().lower()
-                    for line in f
-                    if line.strip()
-                ]
+            file = open(path, "r", encoding="utf-8")
         except FileNotFoundError:
-            raise
+            raise FileNotFoundError(f"Signature file not found: {path}")
 
-    def matches(self, text: str) -> list[str]:
+        lines = file.readlines()
+        file.close()
+
+        for line in lines:
+            line = line.strip()
+            if line != "":
+                self.signatures.append(line.lower())
+
+    def matches(self, text: str):
+        """
+        Return all signatures found in the given text.
+        Case-insensitive substring matching.
+        """
         text = text.lower()
-        return [
-            sig for sig in self.signatures
-            if sig in text
-        ]
+
+        matched = []
+
+        for sig in self.signatures:
+            if sig in text:
+                matched.append(sig)
+
+        return matched
 
 class LogParser:
     """
-    Parses Apache Combined Log Format into structured LogEntry objects.
-
-    Responsibilities:
-    - Validate log line format
-    - Extract HTTP metadata
-    - Normalize URI and query parameters
+    Converts raw Apache logs into structured LogEntry objects.
     """
+
     LOG_PATTERN = re.compile(
         r'^(?P<ip>\S+) '
         r'(?P<ident>\S+) '
@@ -78,113 +79,130 @@ class LogParser:
     )
 
     def parse_line(self, line: str) -> LogEntry:
+        """Parse a single log line into LogEntry."""
+
         match = self.LOG_PATTERN.match(line)
-        if not match:
-            raise ValueError("Invalid Combined Log Format")
+        if match is None:
+            raise ValueError("Invalid log format")
 
         data = match.groupdict()
 
+        timestamp_text = data["timestamp"]
         timestamp = datetime.strptime(
-            data["timestamp"],
+            timestamp_text,
             "%d/%b/%Y:%H:%M:%S %z"
         )
 
-        parts = data["request"].split()
-        if len(parts) != 3:
-            raise ValueError("Malformed request field")
+        request_parts = data["request"].split()
 
-        method, full_uri, _ = parts
-        parsed = urlparse(full_uri)
+        if len(request_parts) != 3:
+            raise ValueError("Malformed request line")
+
+        method = request_parts[0]
+        full_url = request_parts[1]
+
+        parsed_url = urlparse(full_url)
 
         return LogEntry(
             ip=data["ip"],
             timestamp=timestamp,
             method=method,
-            uri=parsed.path,
-            query_string=parsed.query,
+            uri=parsed_url.path,
+            query_string=parsed_url.query,
             status_code=int(data["status"])
         )
 
 class LogAnalyzer:
     """
-    Core analysis engine.
-
-    Performs:
-    - Streaming log processing
-    - Signature-based threat detection
-    - DoS burst detection (per-second aggregation)
-    - Statistical aggregation (IP, status codes, URI frequency)
+    Analyzes logs for:
+    - IP statistics
+    - status codes
+    - URI frequency
+    - signature-based threats
+    - DoS burst detection
     """
 
-    def __init__(self, sigdb: SignatureDB):
-        self.sigdb = sigdb
+    def __init__(self, signature_db: SignatureDB):
+        self.signature_db = signature_db
 
-        self.ip_hits = Counter()
-        self.status_codes = Counter()
-        self.uri_hits = Counter()
+        self.ip_counts = Counter()
+        self.status_counts = Counter()
+        self.uri_counts = Counter()
 
-        self.ip_time = defaultdict(lambda: Counter())
+        # ip -> timestamp -> count
+        self.requests_per_second = defaultdict(lambda: Counter())
 
-        self.threat_detected = False
+        self.threat_found = False
 
+    def process(self, entry: LogEntry):
+        """Process one log entry."""
 
-    def detect_dos(self, threshold=20):
+        self.ip_counts[entry.ip] += 1
+
+        status_group = str(entry.status_code)[0] + "xx"
+        self.status_counts[status_group] += 1
+
+        self.uri_counts[entry.uri] += 1
+
+        timestamp = entry.timestamp.replace(microsecond=0)
+        self.requests_per_second[entry.ip][timestamp] += 1
+
+        full_uri = entry.full_uri()
+        full_uri = unquote(full_uri)
+
+        matched_signatures = self.signature_db.matches(full_uri)
+
+        if len(matched_signatures) > 0:
+            self.threat_found = True
+
+            print(entry.ip + " " + full_uri)
+
+            print(
+                "[ALERT] signature match: " + str(matched_signatures),
+                file=sys.stderr
+            )
+
+    def detect_dos(self, threshold: int = 20) -> bool:
+        """
+        Detect burst traffic per IP per second.
+        """
         detected = False
 
-        for ip, times in self.ip_time.items():
-            for ts, count in times.items():
+        for ip in self.requests_per_second:
+            timestamps = self.requests_per_second[ip]
+
+            for ts in timestamps:
+                count = timestamps[ts]
+
                 if count > threshold:
                     detected = True
                     print(
-                        f"[DoS ALERT] {ip} -> {count} req @ {ts}",
+                        f"[DoS ALERT] {ip} -> {count} requests at {ts}",
                         file=sys.stderr
                     )
 
         return detected
 
-    def process(self, entry: LogEntry):
-
-        # stats
-        self.ip_hits[entry.ip] += 1
-        self.status_codes[f"{entry.status_code // 100}xx"] += 1
-        self.uri_hits[entry.uri] += 1
-
-        ts = entry.timestamp.replace(microsecond=0)
-        self.ip_time[entry.ip][ts] += 1
-
-        full_uri = entry.full_uri()
-        full_uri = unquote(full_uri)
-
-        hits = self.sigdb.matches(full_uri)
-
-        if hits:
-            self.threat_detected = True
-
-            print(f"{entry.ip} {full_uri}")
-
-            print(
-                f"[ALERT] signature match: {hits}",
-                file=sys.stderr
-            )
-
     def report(self):
+        """Print summary statistics."""
 
         print("\n=== STATISTICS ===", file=sys.stderr)
 
-        print("\n[IP FREQUENCY]", file=sys.stderr)
-        for ip, c in self.ip_hits.most_common():
-            print(f"{ip}: {c}", file=sys.stderr)
+        print("\nIP FREQUENCY:", file=sys.stderr)
+        for ip, count in self.ip_counts.most_common():
+            print(ip + ": " + str(count), file=sys.stderr)
 
-        print("\n[STATUS CODES]", file=sys.stderr)
-        for k, v in sorted(self.status_codes.items()):
-            print(f"{k}: {v}", file=sys.stderr)
+        print("\nSTATUS CODES:", file=sys.stderr)
+        for status, count in sorted(self.status_counts.items()):
+            print(status + ": " + str(count), file=sys.stderr)
 
-        print("\n[TOP 10 URIs]", file=sys.stderr)
-        for uri, c in self.uri_hits.most_common(10):
-            print(f"{uri}: {c}", file=sys.stderr)
+        print("\nTOP URIs:", file=sys.stderr)
+        top_uris = self.uri_counts.most_common(10)
+
+        for uri, count in top_uris:
+            print(uri + ": " + str(count), file=sys.stderr)
 
 def main():
-
     parser = argparse.ArgumentParser()
     parser.add_argument("logfile")
     parser.add_argument("-d", "--database", required=True)
@@ -192,42 +210,48 @@ def main():
     args = parser.parse_args()
 
     try:
-        sigdb = SignatureDB(args.database)
-        analyzer = LogAnalyzer(sigdb)
+        signature_db = SignatureDB(args.database)
+        analyzer = LogAnalyzer(signature_db)
 
-        with open(args.logfile, "r", encoding="utf-8") as f:
+        log_file = open(args.logfile, "r", encoding="utf-8")
 
-            for i, line in enumerate(f, 1):
+        line_number = 0
 
-                line = line.strip()
-                if not line:
-                    continue
+        for line in log_file:
+            line_number += 1
+            line = line.strip()
 
-                try:
-                    entry = LogParser().parse_line(line)
-                    analyzer.process(entry)
+            if line == "":
+                continue
 
-                except Exception as e:
-                    print(
-                        f"[ERROR] line {i}: {e}",
-                        file=sys.stderr
-                    )
+            try:
+                parser = LogParser()
+                entry = parser.parse_line(line)
+                analyzer.process(entry)
+
+            except Exception as error:
+                print(
+                    f"[ERROR] line {line_number}: {error}",
+                    file=sys.stderr
+                )
+
+        log_file.close()
 
         analyzer.report()
 
-        dos = analyzer.detect_dos()
+        dos_detected = analyzer.detect_dos()
 
-        if analyzer.threat_detected or dos:
+        if analyzer.threat_found or dos_detected:
             sys.exit(1)
 
         sys.exit(0)
 
-    except FileNotFoundError as e:
-        print(f"[FATAL] missing file: {e}", file=sys.stderr)
+    except FileNotFoundError as error:
+        print(f"[FATAL] missing file: {error}", file=sys.stderr)
         sys.exit(2)
 
-    except Exception as e:
-        print(f"[FATAL] {e}", file=sys.stderr)
+    except Exception as error:
+        print(f"[FATAL] {error}", file=sys.stderr)
         sys.exit(2)
 
 
