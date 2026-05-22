@@ -35,3 +35,61 @@ class LogEntry:
             f"query_string={self.query_string!r}, "
             f"status_code={self.status_code!r})"
         )
+    
+class LogParser:
+
+    LOG_PATTERN = re.compile(
+        r'^(?P<ip>\S+) '
+        r'(?P<ident>\S+) '
+        r'(?P<authuser>\S+) '
+        r'\[(?P<timestamp>[^\]]+)\] '
+        r'"(?P<request>[^"]*)" '
+        r'(?P<status>\d{3}) '
+        r'(?P<size>\S+) '
+        r'"(?P<referer>[^"]*)" '
+        r'"(?P<user_agent>[^"]*)"'
+    )
+
+    def parse_line(self, line: str) -> LogEntry:
+
+        match = self.LOG_PATTERN.match(line)
+
+        if not match:
+            raise ValueError(
+                "Line does not match Combined Log Format"
+            )
+
+        data = match.groupdict()
+
+        timestamp = datetime.strptime(
+            data["timestamp"],
+            "%d/%b/%Y:%H:%M:%S %z"
+        )
+
+        # Request parsing
+        request_parts = data["request"].split()
+
+        if len(request_parts) != 3:
+            raise ValueError(
+                "Malformed HTTP request field"
+            )
+
+        method, full_uri, _ = request_parts
+
+        parsed_uri = urlparse(full_uri)
+
+        uri = parsed_uri.path
+        query_string = parsed_uri.query
+
+        status_code = int(data["status"])
+
+        return LogEntry(
+            ip=data["ip"],
+            timestamp=timestamp,
+            method=method,
+            uri=uri,
+            query_string=query_string,
+            status_code=status_code
+        )
+
+    
