@@ -124,6 +124,13 @@ def main():
         "logfile",
         help="Path to Apache log file"
     )
+    parser.add_argument(
+        "--database",
+        "-d",
+        help="Path to signature database file",
+        required=True
+    )
+
 
     args = parser.parse_args()
 
