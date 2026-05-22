@@ -92,4 +92,23 @@ class LogParser:
             status_code=status_code
         )
 
-    
+    def parse_file(self, file_path: str):
+
+        with open(file_path, "r", encoding="utf-8") as file:
+
+            for line_number, line in enumerate(file, start=1):
+
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                try:
+                    entry = self.parse_line(line)
+                    print(entry)
+
+                except ValueError as e:
+                    print(
+                        f"[ERROR] Line {line_number}: {e}",
+                        file=sys.stderr
+                    )
