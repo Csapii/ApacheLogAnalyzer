@@ -112,3 +112,24 @@ class LogParser:
                         f"[ERROR] Line {line_number}: {e}",
                         file=sys.stderr
                     )
+
+
+def main():
+
+    parser = argparse.ArgumentParser(
+        description="Apache Combined Log Format parser"
+    )
+
+    parser.add_argument(
+        "logfile",
+        help="Path to Apache log file"
+    )
+
+    args = parser.parse_args()
+
+    log_parser = LogParser()
+    log_parser.parse_file(args.logfile)
+
+
+if __name__ == "__main__":
+    main()
