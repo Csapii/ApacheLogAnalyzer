@@ -1,0 +1,28 @@
+union select
+select *
+information_schema
+or 1=1
+or '1'='1'
+drop table
+insert into
+update set
+sleep(
+benchmark(
+load_file(
+outfile
+../../
+../
+/etc/passwd
+/etc/shadow
+%2e%2e%2f
+%2e%2e/
+<script>
+javascript:
+onerror=
+onload=
+alert(
+wget http
+curl http
+cmd=
+exec=
+system(

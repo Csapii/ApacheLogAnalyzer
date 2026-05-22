@@ -37,3 +37,6 @@
 110.136.166.128 - - [17/May/2015:10:05:03 +0000] "GET /style2.css HTTP/1.1" 200 4877 "http://www.semicomplete.com/projects/xdotool/" "Mozilla/5.0 (Windows NT 6.2; WOW64; rv:28.0) Gecko/20100101 Firefox/28.0"
 110.136.166.128 - - [17/May/2015:10:05:41 +0000] "GET /favicon.ico HTTP/1.1" 200 3638 "-" "Mozilla/5.0 (Windows NT 6.2; WOW64; rv:28.0) Gecko/20100101 Firefox/28.0"
 110.136.166.128 - - [17/May/2015:10:05:32 +0000] "GET /images/jordan-80.png HTTP/1.1" 200 6146 "http://www.semicomplete.com/projects/xdotool/" "Mozilla/5.0 (Windows NT 6.2; WOW64; rv:28.0) Gecko/20100101 Firefox/28.0"
+127.0.0.1 - - [12/Jan/2024:10:22:33 +0000] "GET /index.php?id=1 UNION%20SELECT%20password FROM users HTTP/1.1" 200 123 "-" "curl"
+127.0.0.1 - - [12/Jan/2024:10:22:33 +0000] "GET /search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E HTTP/1.1" 200 123 "-" "curl"
+127.0.0.1 - - [12/Jan/2024:10:22:33 +0000] "GET /../../etc/passwd HTTP/1.1" 404 123 "-" "curl"

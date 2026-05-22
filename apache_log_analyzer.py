@@ -3,7 +3,7 @@ import sys
 import argparse
 
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from dataclasses import dataclass
 
 
@@ -36,6 +36,22 @@ class LogEntry:
             f"status_code={self.status_code!r})"
         )
     
+class SignatureDB:
+    def __init__(self, path: str):
+        self.signatures = set()
+        self._load(path)
+
+    def _load(self, path: str):
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                sig = line.strip()
+                if sig:
+                    self.signatures.add(sig.lower())
+
+    def matches(self, text: str) -> list[str]:
+        text = text.lower()
+        return [sig for sig in self.signatures if sig in text]
+
 class LogParser:
 
     LOG_PATTERN = re.compile(
@@ -78,6 +94,7 @@ class LogParser:
 
         parsed_uri = urlparse(full_uri)
 
+
         uri = parsed_uri.path
         query_string = parsed_uri.query
 
@@ -113,6 +130,7 @@ class LogParser:
                     full_uri = entry.uri
                     if entry.query_string:
                         full_uri += "?" + entry.query_string
+                        full_uri = unquote(full_uri)
 
                     # Signature detection
                     hits = sigdb.matches(full_uri)
@@ -130,23 +148,6 @@ class LogParser:
                     print(f"[ERROR] Line {line_number}: {e}", file=sys.stderr)
 
         self.detect_bursts(ip_counter)
-
-                    
-class SignatureDB:
-    def __init__(self, path: str):
-        self.signatures = set()
-        self._load(path)
-
-    def _load(self, path: str):
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                sig = line.strip()
-                if sig:
-                    self.signatures.add(sig.lower())
-
-    def matches(self, text: str) -> list[str]:
-        text = text.lower()
-        return [sig for sig in self.signatures if sig in text]
 
 
 
@@ -170,8 +171,10 @@ def main():
 
     args = parser.parse_args()
 
+    sigdb = SignatureDB(args.database)
     log_parser = LogParser()
-    log_parser.parse_file(args.logfile)
+    log_parser.parse_file(args.logfile, sigdb)
+
 
 
 if __name__ == "__main__":
