@@ -91,27 +91,46 @@ class LogParser:
             query_string=query_string,
             status_code=status_code
         )
+    
+    def detect_bursts(self, ip_counter: dict, threshold: int = 20):
+        for ip, timestamps in ip_counter.items():
+            for ts, count in timestamps.items():
+                if count > threshold:
+                    print(f"[DoS ALERT] {ip} sent {count} requests at {ts}")
 
-    def parse_file(self, file_path: str):
+
+    def parse_file(self, file_path: str, sigdb: SignatureDB):
+        ip_counter = {}  # for DoS detection
 
         with open(file_path, "r", encoding="utf-8") as file:
-
             for line_number, line in enumerate(file, start=1):
-
                 line = line.strip()
-
                 if not line:
                     continue
 
                 try:
                     entry = self.parse_line(line)
+                    full_uri = entry.uri
+                    if entry.query_string:
+                        full_uri += "?" + entry.query_string
+
+                    # Signature detection
+                    hits = sigdb.matches(full_uri)
+                    if hits:
+                        print(f"[ALERT] Signature match from {entry.ip}: {hits}")
+
+                    # DoS counter
+                    ts = entry.timestamp.replace(microsecond=0)
+                    ip_counter.setdefault(entry.ip, {})
+                    ip_counter[entry.ip][ts] = ip_counter[entry.ip].get(ts, 0) + 1
+
                     print(entry)
 
                 except ValueError as e:
-                    print(
-                        f"[ERROR] Line {line_number}: {e}",
-                        file=sys.stderr
-                    )
+                    print(f"[ERROR] Line {line_number}: {e}", file=sys.stderr)
+
+        self.detect_bursts(ip_counter)
+
                     
 class SignatureDB:
     def __init__(self, path: str):
