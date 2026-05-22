@@ -112,6 +112,23 @@ class LogParser:
                         f"[ERROR] Line {line_number}: {e}",
                         file=sys.stderr
                     )
+                    
+class SignatureDB:
+    def __init__(self, path: str):
+        self.signatures = set()
+        self._load(path)
+
+    def _load(self, path: str):
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                sig = line.strip()
+                if sig:
+                    self.signatures.add(sig.lower())
+
+    def matches(self, text: str) -> list[str]:
+        text = text.lower()
+        return [sig for sig in self.signatures if sig in text]
+
 
 
 def main():
