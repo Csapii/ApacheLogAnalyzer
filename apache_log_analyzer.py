@@ -2,10 +2,10 @@ import re
 import sys
 import argparse
 
+from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse, unquote
-from dataclasses import dataclass
-
+from collections import Counter, defaultdict
 
 @dataclass
 class LogEntry:
@@ -16,41 +16,33 @@ class LogEntry:
     query_string: str
     status_code: int
 
-    def __str__(self) -> str:
-        qs = f"?{self.query_string}" if self.query_string else ""
-        return (
-            f"[{self.timestamp}] "
-            f"{self.ip} "
-            f"{self.method} "
-            f"{self.uri}{qs} "
-            f"-> {self.status_code}"
-        )
+    def full_uri(self) -> str:
+        if self.query_string:
+            return f"{self.uri}?{self.query_string}"
+        return self.uri
 
-    def __repr__(self) -> str:
-        return (
-            f"LogEntry(ip={self.ip!r}, "
-            f"timestamp={self.timestamp!r}, "
-            f"method={self.method!r}, "
-            f"uri={self.uri!r}, "
-            f"query_string={self.query_string!r}, "
-            f"status_code={self.status_code!r})"
-        )
-    
 class SignatureDB:
     def __init__(self, path: str):
-        self.signatures = set()
+        self.signatures = []
         self._load(path)
 
     def _load(self, path: str):
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                sig = line.strip()
-                if sig:
-                    self.signatures.add(sig.lower())
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                self.signatures = [
+                    line.strip().lower()
+                    for line in f
+                    if line.strip()
+                ]
+        except FileNotFoundError:
+            raise
 
     def matches(self, text: str) -> list[str]:
         text = text.lower()
-        return [sig for sig in self.signatures if sig in text]
+        return [
+            sig for sig in self.signatures
+            if sig in text
+        ]
 
 class LogParser:
 
@@ -67,13 +59,9 @@ class LogParser:
     )
 
     def parse_line(self, line: str) -> LogEntry:
-
         match = self.LOG_PATTERN.match(line)
-
         if not match:
-            raise ValueError(
-                "Line does not match Combined Log Format"
-            )
+            raise ValueError("Invalid Combined Log Format")
 
         data = match.groupdict()
 
@@ -82,99 +70,137 @@ class LogParser:
             "%d/%b/%Y:%H:%M:%S %z"
         )
 
-        # Request parsing
-        request_parts = data["request"].split()
+        parts = data["request"].split()
+        if len(parts) != 3:
+            raise ValueError("Malformed request field")
 
-        if len(request_parts) != 3:
-            raise ValueError(
-                "Malformed HTTP request field"
-            )
-
-        method, full_uri, _ = request_parts
-
-        parsed_uri = urlparse(full_uri)
-
-
-        uri = parsed_uri.path
-        query_string = parsed_uri.query
-
-        status_code = int(data["status"])
+        method, full_uri, _ = parts
+        parsed = urlparse(full_uri)
 
         return LogEntry(
             ip=data["ip"],
             timestamp=timestamp,
             method=method,
-            uri=uri,
-            query_string=query_string,
-            status_code=status_code
+            uri=parsed.path,
+            query_string=parsed.query,
+            status_code=int(data["status"])
         )
-    
-    def detect_bursts(self, ip_counter: dict, threshold: int = 20):
-        for ip, timestamps in ip_counter.items():
-            for ts, count in timestamps.items():
+
+class LogAnalyzer:
+
+    def __init__(self, sigdb: SignatureDB):
+        self.sigdb = sigdb
+
+        self.ip_hits = Counter()
+        self.status_codes = Counter()
+        self.uri_hits = Counter()
+
+        self.ip_time = defaultdict(lambda: Counter())
+
+        self.threat_detected = False
+
+
+    def detect_dos(self, threshold=20):
+        detected = False
+
+        for ip, times in self.ip_time.items():
+            for ts, count in times.items():
                 if count > threshold:
-                    print(f"[DoS ALERT] {ip} sent {count} requests at {ts}")
+                    detected = True
+                    print(
+                        f"[DoS ALERT] {ip} -> {count} req @ {ts}",
+                        file=sys.stderr
+                    )
 
+        return detected
 
-    def parse_file(self, file_path: str, sigdb: SignatureDB):
-        ip_counter = {}  # for DoS detection
+    def process(self, entry: LogEntry):
 
-        with open(file_path, "r", encoding="utf-8") as file:
-            for line_number, line in enumerate(file, start=1):
+        # stats
+        self.ip_hits[entry.ip] += 1
+        self.status_codes[f"{entry.status_code // 100}xx"] += 1
+        self.uri_hits[entry.uri] += 1
+
+        ts = entry.timestamp.replace(microsecond=0)
+        self.ip_time[entry.ip][ts] += 1
+
+        full_uri = entry.full_uri()
+        full_uri = unquote(full_uri)
+
+        hits = self.sigdb.matches(full_uri)
+
+        if hits:
+            self.threat_detected = True
+
+            print(f"{entry.ip} {full_uri}")
+
+            print(
+                f"[ALERT] signature match: {hits}",
+                file=sys.stderr
+            )
+
+    def report(self):
+
+        print("\n=== STATISTICS ===", file=sys.stderr)
+
+        print("\n[IP FREQUENCY]", file=sys.stderr)
+        for ip, c in self.ip_hits.most_common():
+            print(f"{ip}: {c}", file=sys.stderr)
+
+        print("\n[STATUS CODES]", file=sys.stderr)
+        for k, v in sorted(self.status_codes.items()):
+            print(f"{k}: {v}", file=sys.stderr)
+
+        print("\n[TOP 10 URIs]", file=sys.stderr)
+        for uri, c in self.uri_hits.most_common(10):
+            print(f"{uri}: {c}", file=sys.stderr)
+
+def main():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("logfile")
+    parser.add_argument("-d", "--database", required=True)
+
+    args = parser.parse_args()
+
+    try:
+        sigdb = SignatureDB(args.database)
+        analyzer = LogAnalyzer(sigdb)
+
+        with open(args.logfile, "r", encoding="utf-8") as f:
+
+            for i, line in enumerate(f, 1):
+
                 line = line.strip()
                 if not line:
                     continue
 
                 try:
-                    entry = self.parse_line(line)
-                    full_uri = entry.uri
-                    if entry.query_string:
-                        full_uri += "?" + entry.query_string
-                        full_uri = unquote(full_uri)
+                    entry = LogParser().parse_line(line)
+                    analyzer.process(entry)
 
-                    # Signature detection
-                    hits = sigdb.matches(full_uri)
-                    if hits:
-                        print(f"[ALERT] Signature match from {entry.ip}: {hits}")
+                except Exception as e:
+                    print(
+                        f"[ERROR] line {i}: {e}",
+                        file=sys.stderr
+                    )
 
-                    # DoS counter
-                    ts = entry.timestamp.replace(microsecond=0)
-                    ip_counter.setdefault(entry.ip, {})
-                    ip_counter[entry.ip][ts] = ip_counter[entry.ip].get(ts, 0) + 1
+        analyzer.report()
 
-                    print(entry)
+        dos = analyzer.detect_dos()
 
-                except ValueError as e:
-                    print(f"[ERROR] Line {line_number}: {e}", file=sys.stderr)
+        if analyzer.threat_detected or dos:
+            sys.exit(1)
 
-        self.detect_bursts(ip_counter)
+        sys.exit(0)
 
+    except FileNotFoundError as e:
+        print(f"[FATAL] missing file: {e}", file=sys.stderr)
+        sys.exit(2)
 
-
-def main():
-
-    parser = argparse.ArgumentParser(
-        description="Apache Combined Log Format parser"
-    )
-
-    parser.add_argument(
-        "logfile",
-        help="Path to Apache log file"
-    )
-    parser.add_argument(
-        "--database",
-        "-d",
-        help="Path to signature database file",
-        required=True
-    )
-
-
-    args = parser.parse_args()
-
-    sigdb = SignatureDB(args.database)
-    log_parser = LogParser()
-    log_parser.parse_file(args.logfile, sigdb)
-
+    except Exception as e:
+        print(f"[FATAL] {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":
