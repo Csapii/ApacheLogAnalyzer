@@ -1,3 +1,9 @@
+# DoS detection uses per-second bucketing:
+# timestamps are normalized to second precision to approximate request bursts.
+# This allows detection of sudden traffic spikes per IP without storing raw events.
+# Signature matching uses case-insensitive substring search over normalized request
+# URI + query string. This is a simple baseline detector for known attack vectors.
+
 import re
 import sys
 import argparse
@@ -22,6 +28,12 @@ class LogEntry:
         return self.uri
 
 class SignatureDB:
+    """
+    Stores and matches security signatures against HTTP request data.
+
+    Matching is case-insensitive and performed via substring search
+    over full normalized URI + query string.
+    """
     def __init__(self, path: str):
         self.signatures = []
         self._load(path)
@@ -45,7 +57,14 @@ class SignatureDB:
         ]
 
 class LogParser:
+    """
+    Parses Apache Combined Log Format into structured LogEntry objects.
 
+    Responsibilities:
+    - Validate log line format
+    - Extract HTTP metadata
+    - Normalize URI and query parameters
+    """
     LOG_PATTERN = re.compile(
         r'^(?P<ip>\S+) '
         r'(?P<ident>\S+) '
@@ -87,6 +106,15 @@ class LogParser:
         )
 
 class LogAnalyzer:
+    """
+    Core analysis engine.
+
+    Performs:
+    - Streaming log processing
+    - Signature-based threat detection
+    - DoS burst detection (per-second aggregation)
+    - Statistical aggregation (IP, status codes, URI frequency)
+    """
 
     def __init__(self, sigdb: SignatureDB):
         self.sigdb = sigdb
