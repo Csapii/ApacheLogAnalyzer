@@ -23,12 +23,11 @@ class LogEntry:
         return self.uri
     
     def __str__(self) -> str:
-        qs = f"?{self.query_string}" if self.query_string else ""
         return (
             f"[{self.timestamp}] "
             f"{self.ip} "
             f"{self.method} "
-            f"{self.uri}{qs} "
+            f"{self.full_uri} "
             f"-> {self.status_code}"
         )
     def __repr__(self) -> str:
